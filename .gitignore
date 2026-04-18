@@ -8,3 +8,4 @@ build/
 venv/
 *.log
 assets/qr_code.png
+docker-compose.override.yml

@@ -140,6 +140,51 @@ async def mark_transaction_credited(txn_id: str, user_id: int) -> None:
         raise
 
 
+async def credit_transaction_and_balance(
+    txn_id: str,
+    user_id: int,
+    amount: Decimal,
+) -> Decimal:
+    """
+    Atomically mark a transaction as credited AND increment the user's balance.
+
+    Both operations run inside a single PostgreSQL transaction so a crash
+    between the two can never leave money debited without a balance update.
+
+    Returns the new balance.
+    """
+    pool = get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE received_transactions
+                    SET credited = TRUE, matched_user_id = $1
+                    WHERE txn_id = $2
+                    """,
+                    user_id, txn_id,
+                )
+                row = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET balance = balance + $1
+                    WHERE id = $2
+                    RETURNING balance
+                    """,
+                    amount, user_id,
+                )
+        if row is None:
+            raise ValueError(f"User {user_id} not found during balance credit")
+        return row["balance"]
+    except Exception:
+        logger.exception(
+            "Error in atomic credit: txn_id=%s user_id=%s amount=%s",
+            txn_id, user_id, amount,
+        )
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Deposit sessions
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # EC2 Deployment Guide — Telegram Deposit Bot
 
-Step-by-step instructions for deploying to an AWS EC2 instance (Amazon Linux 2 / Ubuntu).
+Step-by-step instructions for deploying to an AWS EC2 instance (Amazon Linux 2023 or Ubuntu 22.04).
 
 ---
 
@@ -28,6 +28,7 @@ ssh -i your-key.pem ubuntu@YOUR_EC2_PUBLIC_IP
 ## Step 2 — Install Docker and Docker Compose
 
 **Amazon Linux 2023:**
+
 ```bash
 sudo yum update -y
 sudo yum install -y docker git
@@ -45,6 +46,7 @@ docker compose version   # should print v2.x
 ```
 
 **Ubuntu 22.04:**
+
 ```bash
 sudo apt update && sudo apt install -y docker.io docker-compose-plugin git
 sudo systemctl enable docker
@@ -67,20 +69,36 @@ cd telegram-bot
 > If the repo is private, use a personal access token:
 > `git clone https://YOUR_TOKEN@github.com/YOUR_USERNAME/telegram-bot.git`
 
+**Do NOT copy `docker-compose.override.yml` to EC2.** That file is for local development only. The EC2 server should only have `docker-compose.yml`.
+
 ---
 
 ## Step 4 — Create the `.env` file
 
 ```bash
-cp .env.example .env   # if .env.example exists, otherwise:
+cp .env.example .env
 nano .env
 ```
 
-Paste and fill in your values:
+After saving, load the vars into your current shell session (needed for the psql commands in later steps):
+
+```bash
+set -a && source .env && set +a
+```
+
+> You need to re-run this any time you open a new SSH session before running psql commands.
+
+Fill in every value:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_bot_token_here
-DATABASE_URL=postgresql://user:StrongPassword123@postgres:5432/depositbot
+
+# PostgreSQL — read by both the bot and the postgres container
+POSTGRES_DB=depositbot
+POSTGRES_USER=botuser
+POSTGRES_PASSWORD=StrongPassword123
+DATABASE_URL=postgresql://botuser:StrongPassword123@postgres:5432/depositbot
+
 REDIS_URL=redis://redis:6379/0
 SMS_WEBHOOK_SECRET=generate_a_random_secret_here
 ADMIN_TELEGRAM_ID=your_telegram_id_here
@@ -89,32 +107,23 @@ LOG_LEVEL=INFO
 QR_CODE_PATH=assets/qr_code.png
 ```
 
-> Generate a strong secret:
-> ```bash
-> python3 -c "import secrets; print(secrets.token_hex(16))"
-> ```
+Generate strong random secrets:
 
-**Important — update DB password in docker-compose.yml to match:**
 ```bash
-nano docker-compose.yml
+python3 -c "import secrets; print(secrets.token_hex(16))"
 ```
-Change the postgres service:
-```yaml
-environment:
-  POSTGRES_DB: depositbot
-  POSTGRES_USER: user
-  POSTGRES_PASSWORD: StrongPassword123   # ← match DATABASE_URL
-```
+
+> `POSTGRES_PASSWORD` in `.env` is read by both the bot (`DATABASE_URL`) and the postgres container. No need to edit `docker-compose.yml` separately.
 
 ---
 
 ## Step 5 — Add your UPI QR code
 
-Copy your UPI QR code image to the assets folder:
+Run this on your **local machine**, not on EC2:
 
 ```bash
-# From your local machine — run this locally, not on EC2
-scp -i your-key.pem /path/to/your_qr_code.png ec2-user@YOUR_EC2_PUBLIC_IP:~/telegram-bot/assets/qr_code.png
+scp -i your-key.pem /path/to/your_qr_code.png \
+  ec2-user@YOUR_EC2_PUBLIC_IP:~/telegram-bot/assets/qr_code.png
 ```
 
 ---
@@ -127,60 +136,59 @@ docker compose up -d --build
 ```
 
 Watch startup logs:
+
 ```bash
 docker compose logs -f bot
 ```
 
 Expected output:
-```
+
+```text
 Connecting to PostgreSQL...
 Webhook Redis client initialised.
 Telegram bot started (polling).
 Watchdog scheduler started.
 ```
 
+The bot waits for postgres and redis health checks to pass before starting.
+
 ---
 
 ## Step 7 — Seed the database with test users
 
-Wait until Step 6 completes (postgres container is healthy), then run:
+Replace the phone numbers below with real numbers you'll use for testing (in E.164 format: `+91XXXXXXXXXX`).
 
 ```bash
-docker compose exec postgres psql -U user -d depositbot -c "
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "
 INSERT INTO users (phone, name) VALUES
-  ('+919876543210', 'Rahul Sharma'),
-  ('+919823456789', 'Priya Patel'),
-  ('+918765432109', 'Amit Verma'),
-  ('+917654321098', 'Sneha Nair'),
-  ('+916543210987', 'Vikram Singh')
+  ('+917387243265', 'Rishabh Nimje'),
+  ('+919876543210', 'Test User 2'),
+  ('+919823456789', 'Test User 3')
 ON CONFLICT (phone) DO NOTHING;
 "
 ```
 
-Verify the users were inserted:
+Verify:
+
 ```bash
-docker compose exec postgres psql -U user -d depositbot -c \
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c \
   "SELECT id, name, phone, balance FROM users;"
 ```
 
-Expected:
-```
- id |     name      |     phone      | balance
-----+---------------+----------------+---------
-  1 | Rahul Sharma  | +919876543210  |    0.00
-  2 | Priya Patel   | +919823456789  |    0.00
-  3 | Amit Verma    | +918765432109  |    0.00
-  4 | Sneha Nair    | +917654321098  |    0.00
-  5 | Vikram Singh  | +916543210987  |    0.00
+Verify:
+
+```bash
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT id, name, phone, balance FROM users;"
 ```
 
-> To test the full deposit flow, one of these phone numbers must match the phone number on the Telegram account you use for testing. When you open the bot and share your contact, it matches against these records.
+> The phone number you use in Telegram must match one of the seeded numbers. When you send `/start` and share your contact, the bot matches it against this table.
 
 ---
 
 ## Step 8 — Verify the webhook is reachable
 
 From your **local machine**:
+
 ```bash
 curl http://YOUR_EC2_PUBLIC_IP:8000/health
 ```
@@ -188,6 +196,7 @@ curl http://YOUR_EC2_PUBLIC_IP:8000/health
 Expected: `{"status":"ok"}`
 
 Test the SMS endpoint:
+
 ```bash
 curl -X POST http://YOUR_EC2_PUBLIC_IP:8000/webhook/sms \
   -H "Content-Type: application/json" \
@@ -197,9 +206,10 @@ curl -X POST http://YOUR_EC2_PUBLIC_IP:8000/webhook/sms \
 
 Expected: `{"status":"queued"}`
 
-Then verify it was parsed and inserted:
+Verify it was parsed and inserted:
+
 ```bash
-docker compose exec postgres psql -U user -d depositbot -c \
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c \
   "SELECT txn_id, amount, credited FROM received_transactions;"
 ```
 
@@ -210,7 +220,7 @@ docker compose exec postgres psql -U user -d depositbot -c \
 Point the app at your EC2 public URL:
 
 | Field | Value |
-|-------|-------|
+| ----- | ----- |
 | URL | `http://YOUR_EC2_PUBLIC_IP:8000/webhook/sms` |
 | Method | POST |
 | Header key | `X-SMS-Secret` |
@@ -221,7 +231,7 @@ Point the app at your EC2 public URL:
 Heartbeat rule (keeps watchdog silent):
 
 | Field | Value |
-|-------|-------|
+| ----- | ----- |
 | URL | `http://YOUR_EC2_PUBLIC_IP:8000/webhook/heartbeat` |
 | Method | POST |
 | Header | same `X-SMS-Secret` |
@@ -233,9 +243,7 @@ Heartbeat rule (keeps watchdog silent):
 ## Step 10 — Run the smoke test
 
 ```bash
-# On EC2
-cd ~/telegram-bot
-docker compose exec bot python scripts/smoke_test.py
+docker compose exec bot uv run python scripts/smoke_test.py
 ```
 
 All 5 checks should pass.
@@ -244,20 +252,21 @@ All 5 checks should pass.
 
 ## Step 11 — End-to-end payment test
 
-1. Open the bot in Telegram → `/start` → share your phone number  
-   (must match one of the seeded numbers, e.g. `+919876543210`)
+1. Open the bot in Telegram → `/start` → share your phone number (must match a seeded number)
 2. Tap **Deposit** — bot sends the QR code
 3. Pay ₹1 via any UPI app
 4. Bank SMS arrives on Android → forwarded to EC2 webhook → parsed → inserted into DB
 5. Submit the UTR in the bot → bot replies with balance confirmation
 
-**Or test without real payment (inject SMS manually):**
+**Or test without a real payment (inject SMS manually):**
+
 ```bash
 curl -X POST http://YOUR_EC2_PUBLIC_IP:8000/webhook/sms \
   -H "Content-Type: application/json" \
   -H "X-SMS-Secret: YOUR_SMS_WEBHOOK_SECRET" \
   -d '{"sender":"HDFCBK","body":"Rs.500.00 credited to your a/c XX1234 on 17-04-26. Info: UPI-Test. Ref No 998877665544. -HDFC Bank"}'
 ```
+
 Then submit UTR `998877665544` in the bot.
 
 ---
@@ -265,6 +274,9 @@ Then submit UTR `998877665544` in the bot.
 ## Useful commands
 
 ```bash
+# Load .env vars into shell first (required for psql commands)
+set -a && source .env && set +a
+
 # View live logs
 docker compose logs -f bot
 
@@ -278,9 +290,9 @@ docker compose down
 docker compose down -v
 
 # Open a psql shell
-docker compose exec postgres psql -U user -d depositbot
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
 
-# Check Redis queue
+# Check Redis queue length and forwarder heartbeat
 docker compose exec redis redis-cli llen sms_queue
 docker compose exec redis redis-cli get sms_forwarder_heartbeat
 
@@ -292,9 +304,9 @@ docker compose ps
 
 ## Security hardening (before going live)
 
-- [ ] Lock port 5432 (Postgres) and 6379 (Redis) in the security group — they should NOT be public-facing
-- [ ] Lock port 8000 to only the Android device IP if static, or put it behind nginx + SSL
+- [x] Postgres and Redis ports are NOT exposed publicly (handled in `docker-compose.yml`)
+- [ ] Lock port 8000 to only the Android device IP, or put it behind nginx + SSL
 - [ ] Use a strong random `SMS_WEBHOOK_SECRET` (32+ chars)
-- [ ] Change the default Postgres password from `password` to something strong
+- [ ] Use a strong `POSTGRES_PASSWORD` (not the example value)
 - [ ] Set `LOG_LEVEL=WARNING` in production to reduce log volume
 - [ ] Enable EC2 instance termination protection in the AWS console

@@ -99,6 +99,17 @@ async def main() -> None:
     logger.info("Connecting to PostgreSQL...")
     await create_pool()
 
+    try:
+        await _run(redis_url, port, admin_id)
+    finally:
+        # Always close the pool — even if _run raises during init or runtime.
+        await close_pool()
+
+
+async def _run(redis_url: str, port: int, admin_id: Optional[int]) -> None:
+    """Inner coroutine — all startup, runtime, and teardown except the DB pool."""
+    global _uvicorn_server
+
     # ---- Webhook Redis client ----
     await init_redis(redis_url)
 
@@ -171,9 +182,8 @@ async def main() -> None:
     await tg_app.stop()
     await tg_app.shutdown()
 
-    # Close Redis + DB
+    # Close Redis
     await close_redis()
-    await close_pool()
 
     logger.info("Shutdown complete.")
 

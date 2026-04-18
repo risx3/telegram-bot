@@ -11,7 +11,7 @@ import logging
 from decimal import Decimal
 from typing import Optional
 
-from bot.db import queries
+from bot.db.queries import credit_transaction_and_balance, get_transaction_by_txn_id
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +57,13 @@ async def verify_transaction(
         A :class:`VerificationResult` describing the outcome.
     """
     for attempt in range(1, _MAX_ATTEMPTS + 1):
-        txn = await queries.get_transaction_by_txn_id(txn_id)
+        txn = await get_transaction_by_txn_id(txn_id)
 
         if txn is not None:
-            # Found — check for double-credit
-            if txn["credited"]:
+            # Found — check for double-credit.
+            # Guard on both the credited flag AND matched_user_id so a transaction
+            # that is already associated with any user cannot be reused.
+            if txn["credited"] or txn["matched_user_id"] is not None:
                 logger.warning("Double-credit attempt: txn_id=%s user_id=%s", txn_id, user_id)
                 return VerificationResult(success=False, already_credited=True)
 
@@ -73,10 +75,8 @@ async def verify_transaction(
                     error_message="Transaction amount is invalid. Please contact support.",
                 )
 
-            # Mark credited and update balance atomically via two sequential queries
-            # (asyncpg does not expose multi-statement transactions as a single call here)
-            await queries.mark_transaction_credited(txn_id, user_id)
-            new_balance = await queries.credit_user_balance(user_id, amount)
+            # Atomically mark credited AND credit balance inside a single DB transaction.
+            new_balance = await credit_transaction_and_balance(txn_id, user_id, amount)
 
             logger.info(
                 "Transaction credited: txn_id=%s user_id=%s amount=%s new_balance=%s",
@@ -94,10 +94,7 @@ async def verify_transaction(
                 await progress_callback(attempt, _MAX_ATTEMPTS)
             await asyncio.sleep(_POLL_INTERVAL)
 
-    # Exhausted all retries
+    # Exhausted all retries — caller is responsible for logging manual review
+    # since only the caller knows the user's telegram_id.
     logger.warning("Transaction not found after %d attempts: txn_id=%s", _MAX_ATTEMPTS, txn_id)
-    await queries.insert_manual_review(
-        telegram_id=0,  # will be overridden by the caller which knows telegram_id
-        txn_id=txn_id,
-    )
     return VerificationResult(success=False, not_found=True)

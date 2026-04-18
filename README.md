@@ -125,11 +125,17 @@ The Android phone must forward incoming bank SMS messages to your webhook in rea
 > **Legend used throughout this guide**
 >
 > - `💻 Terminal` — run on your local machine (host)
-> - `🐳 Docker` — run inside a Docker container via `docker-compose exec`
+> - `🐳 Docker` — run inside a Docker container via `docker compose exec`
 >
-> **All commands must be run from the project root directory** (`telegram-deposit-bot/`).
+> **All commands must be run from the project root directory.**
 > If you get `no configuration file provided: not found`, you are in the wrong directory.
-> Run `cd /path/to/telegram-deposit-bot` first.
+
+There are two ways to run locally — pick one:
+
+| Mode | When to use |
+| ---- | ----------- |
+| **A — Full Docker** | Simplest. Everything runs in containers. No Python install needed. |
+| **B — Hybrid (uv + Docker)** | Best for development. Bot runs on your machine (fast restarts), Postgres/Redis in Docker. |
 
 ---
 
@@ -152,15 +158,32 @@ cd telegram-deposit-bot
 cp .env.example .env
 ```
 
-Then open `.env` in your editor and fill in:
+Open `.env` and fill in every value:
 
-| Variable | Where to get it |
-| --- | --- |
-| `TELEGRAM_BOT_TOKEN` | From BotFather (see above) |
-| `ADMIN_TELEGRAM_ID` | From @userinfobot (see above) |
-| `DATABASE_URL` | `postgresql://user:password@localhost:5432/depositbot` |
-| `REDIS_URL` | `redis://localhost:6379/0` |
-| `SMS_WEBHOOK_SECRET` | Any random string — use `openssl rand -hex 32` |
+| Variable | Where to get it | Example |
+| -------- | --------------- | ------- |
+| `TELEGRAM_BOT_TOKEN` | BotFather (see above) | `7123456789:AAF...` |
+| `ADMIN_TELEGRAM_ID` | @userinfobot (see above) | `987654321` |
+| `POSTGRES_DB` | Choose a name | `depositbot` |
+| `POSTGRES_USER` | Choose a username | `botuser` |
+| `POSTGRES_PASSWORD` | Generate a strong password | `openssl rand -hex 16` |
+| `DATABASE_URL` | See Mode A/B note below | — |
+| `REDIS_URL` | See Mode A/B note below | — |
+| `SMS_WEBHOOK_SECRET` | Generate randomly | `openssl rand -hex 16` |
+
+**Mode A (Full Docker)** — bot connects to containers by service name:
+
+```env
+DATABASE_URL=postgresql://botuser:YOUR_PASSWORD@postgres:5432/depositbot
+REDIS_URL=redis://redis:6379/0
+```
+
+**Mode B (Hybrid / uv)** — bot runs on host, connects to Docker on localhost:
+
+```env
+DATABASE_URL=postgresql://botuser:YOUR_PASSWORD@localhost:5432/depositbot
+REDIS_URL=redis://localhost:6379/0
+```
 
 ---
 
@@ -174,62 +197,96 @@ cp /path/to/your/qr.png assets/qr_code.png
 
 ---
 
-### 4. Start Postgres and Redis
+### 4A — Full Docker: start everything
 
-💻 **Terminal** — starts only the database and cache, not the bot
+💻 **Terminal**
 
 ```bash
-docker-compose up -d postgres redis
+docker compose up -d --build
 ```
 
-Verify both containers are running:
+All three services (bot, postgres, redis) start together. The bot waits for postgres and redis to be healthy before starting.
+
+Watch startup logs:
 
 ```bash
-docker-compose ps
+docker compose logs -f bot
+```
+
+Skip to **Step 5**.
+
+---
+
+### 4B — Hybrid: start only Postgres and Redis
+
+💻 **Terminal**
+
+```bash
+docker compose up -d postgres redis
+```
+
+`docker-compose.override.yml` (included in the repo) automatically exposes Postgres on `localhost:5432` and Redis on `localhost:6379` when running locally, so the bot can reach them from outside Docker.
+
+Verify both are healthy:
+
+```bash
+docker compose ps
 ```
 
 ---
 
-### 5. Run database migrations
+### 5. Seed the database with test users
 
-The migration file is automatically applied the **first time** Postgres starts (via the `docker-entrypoint-initdb.d` volume mount in `docker-compose.yml`). If you need to apply it manually (e.g. after wiping the volume):
-
-🐳 **Docker** — runs `psql` inside the Postgres container
-
-```bash
-docker-compose exec postgres psql -U user -d depositbot -f /docker-entrypoint-initdb.d/001_init.sql
-```
-
-Confirm tables were created:
+Wait until Postgres is healthy (Step 4A/4B), then add users.
+The phone numbers here must match the Telegram accounts you'll use for testing.
 
 🐳 **Docker**
 
 ```bash
-docker-compose exec postgres psql -U user -d depositbot -c "\dt"
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "
+INSERT INTO users (phone, name) VALUES
+  ('+919876543210', 'Rahul Sharma'),
+  ('+919823456789', 'Priya Patel'),
+  ('+918765432109', 'Amit Verma'),
+  ('+917654321098', 'Sneha Nair'),
+  ('+916543210987', 'Vikram Singh')
+ON CONFLICT (phone) DO NOTHING;
+"
 ```
+
+Verify:
+
+```bash
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c \
+  "SELECT id, name, phone, balance FROM users;"
+```
+
+> If the shell doesn't expand `$POSTGRES_USER`/`$POSTGRES_DB`, replace them with the literal values from your `.env`.
 
 ---
 
-### 6. Pre-load registered users
+### 6. Run database migrations (if needed)
 
-Users must exist in the database before they can use the bot (the bot looks up phone numbers on `/start`).
+Migrations auto-apply on first Postgres start. To apply manually (e.g. after wiping the volume):
 
 🐳 **Docker**
 
 ```bash
-docker-compose exec postgres psql -U user -d depositbot
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB \
+  -f /docker-entrypoint-initdb.d/001_init.sql
 ```
 
-Then inside the psql prompt:
+Confirm tables:
 
-```sql
-INSERT INTO users (phone, name) VALUES ('+919876543210', 'Rahul Sharma');
-\q
+```bash
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "\dt"
 ```
 
 ---
 
-### 7. Install Python dependencies and run the bot
+### 7. Run the bot (Mode B — Hybrid only)
+
+*Skip this step if you used Mode A (Full Docker) — the bot is already running.*
 
 💻 **Terminal** — using uv (recommended)
 
@@ -237,23 +294,18 @@ INSERT INTO users (phone, name) VALUES ('+919876543210', 'Rahul Sharma');
 # Install all dependencies (creates .venv automatically)
 uv sync
 
-# Include dev dependencies (pytest etc.)
-uv sync --extra dev
-
-# Run the bot inside the managed virtualenv
+# Run the bot
 uv run python -m bot.main
 ```
 
-Or with pip if you prefer:
+Or with pip:
 
 ```bash
 pip install -r requirements.txt
 python -m bot.main
 ```
 
-The bot starts polling Telegram and the FastAPI webhook server listens on port `8000`.
-
-> **Tip:** `uv sync` reads `pyproject.toml` and creates a `.venv` in the project root automatically — no need to create or activate a virtualenv manually.
+The bot starts polling Telegram and FastAPI listens on port `8000`.
 
 ---
 
@@ -264,7 +316,10 @@ The Android SMS forwarder needs a public HTTPS URL to POST to. Use ngrok to tunn
 💻 **Terminal** — open a new terminal tab
 
 ```bash
-# Install ngrok from https://ngrok.com/download, then:
+# Install ngrok (one-time)
+brew install ngrok/ngrok/ngrok   # macOS
+# or download from https://ngrok.com/download
+
 ngrok http 8000
 ```
 
@@ -280,38 +335,42 @@ Use `https://abc123.ngrok-free.app/webhook/sms` as the forwarder webhook URL.
 
 ## Production Deployment (Docker)
 
-All services (bot, Postgres, Redis) run as Docker containers. No Python install needed on the server.
+> See [DEPLOY_EC2.md](DEPLOY_EC2.md) for the full EC2 step-by-step guide.
+
+All services (bot, Postgres, Redis) run as Docker containers. No Python install needed on the server.  
+**Do NOT copy `docker-compose.override.yml` to the server** — it is for local dev only.
 
 ### 1. Build and start everything
 
 💻 **Terminal** — on your server
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 Check that all three containers are healthy:
 
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 Watch live logs from the bot:
 
 ```bash
-docker-compose logs -f bot
+docker compose logs -f bot
 ```
 
 ---
 
 ### 2. Apply migrations (first deploy only)
 
-Migrations auto-run on first `docker-compose up`. To apply manually:
+Migrations auto-run on first `docker compose up`. To apply manually:
 
 🐳 **Docker**
 
 ```bash
-docker-compose exec postgres psql -U user -d depositbot -f /docker-entrypoint-initdb.d/001_init.sql
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB \
+  -f /docker-entrypoint-initdb.d/001_init.sql
 ```
 
 ---
@@ -321,14 +380,12 @@ docker-compose exec postgres psql -U user -d depositbot -f /docker-entrypoint-in
 🐳 **Docker**
 
 ```bash
-docker-compose exec postgres psql -U user -d depositbot
-```
-
-Inside the psql prompt:
-
-```sql
-INSERT INTO users (phone, name) VALUES ('+919876543210', 'Rahul Sharma');
-\q
+docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "
+INSERT INTO users (phone, name) VALUES
+  ('+919876543210', 'Rahul Sharma'),
+  ('+919823456789', 'Priya Patel')
+ON CONFLICT (phone) DO NOTHING;
+"
 ```
 
 ---

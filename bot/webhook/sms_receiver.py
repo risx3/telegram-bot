@@ -81,8 +81,10 @@ class HeartbeatPayload(BaseModel):
 def _verify_secret(x_sms_secret: Optional[str]) -> None:
     expected = os.environ.get("SMS_WEBHOOK_SECRET", "")
     if not expected:
-        logger.warning("SMS_WEBHOOK_SECRET is not set — webhook is unprotected!")
-        return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook is not configured (SMS_WEBHOOK_SECRET missing).",
+        )
     if x_sms_secret != expected:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

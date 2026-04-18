@@ -97,6 +97,9 @@ def parse(sms_body: str) -> Optional[dict]:
             try:
                 amount = _clean_amount(match.group(1))
                 txn_id = _clean_txn_id(match.group(2))
+                if amount <= 0:
+                    logger.warning("Rejected %s SMS with non-positive amount: %.2f", bank_name, amount)
+                    return None
                 logger.debug("Parsed %s SMS: txn_id=%s amount=%.2f", bank_name, txn_id, amount)
                 return {"txn_id": txn_id, "amount": amount, "bank": bank_name}
             except (IndexError, ValueError) as exc:
@@ -110,6 +113,9 @@ def parse(sms_body: str) -> Optional[dict]:
         try:
             amount = _clean_amount(amount_match.group(1))
             txn_id = _clean_txn_id(txn_match.group(1))
+            if amount <= 0:
+                logger.warning("Rejected generic SMS with non-positive amount: %.2f", amount)
+                return None
             logger.debug("Parsed generic SMS: txn_id=%s amount=%.2f", txn_id, amount)
             return {"txn_id": txn_id, "amount": amount, "bank": "Unknown"}
         except ValueError as exc:
