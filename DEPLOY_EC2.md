@@ -161,7 +161,7 @@ Replace the phone numbers below with real numbers you'll use for testing (in E.1
 ```bash
 docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "
 INSERT INTO users (phone, name) VALUES
-  ('+917387243265', 'Rishabh Nimje'),
+  ('+917387243265', 'Ronnie H'),
   ('+919876543210', 'Test User 2'),
   ('+919823456789', 'Test User 3')
 ON CONFLICT (phone) DO NOTHING;
