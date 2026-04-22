@@ -68,9 +68,7 @@ async def _check_heartbeat(bot: Bot, redis_url: str, admin_id: int) -> None:
         # First alert (or cooldown expired) — send message and set cooldown
         if raw is None:
             logger.warning("Watchdog: heartbeat key missing in Redis.")
-            message = (
-                "Send /start anytime to return."
-            )
+            message = "SMS Forwarder alert: no heartbeat received. The forwarder app may be offline."
         else:
             last_seen_ts = int(raw)
             last_seen_str = datetime.fromtimestamp(last_seen_ts, tz=timezone.utc).strftime(
@@ -78,7 +76,8 @@ async def _check_heartbeat(bot: Bot, redis_url: str, admin_id: int) -> None:
             )
             logger.warning("Watchdog: heartbeat is stale (%ds old).", now - last_seen_ts)
             message = (
-                "Send /start anytime to return."
+                f"SMS Forwarder alert: last heartbeat was at {last_seen_str} "
+                f"({now - last_seen_ts}s ago). Check the forwarder app."
             )
 
         await bot.send_message(chat_id=admin_id, text=message)
@@ -100,8 +99,7 @@ async def _daily_summary(bot: Bot, admin_id: int) -> None:
             "Daily Summary\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"SMSes received (last 24h): {stats['sms_received']}\n"
-            f"Transactions credited:     {stats['credited']}\n"
-            f"Manual reviews pending:    {stats['manual_review']}\n"
+            f"Transactions confirmed:    {stats['confirmed']}\n"
             "━━━━━━━━━━━━━━━━━━"
         )
         await bot.send_message(chat_id=admin_id, text=text)

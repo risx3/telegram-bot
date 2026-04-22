@@ -80,14 +80,6 @@ cp .env.example .env
 nano .env
 ```
 
-After saving, load the vars into your current shell session (needed for the psql commands in later steps):
-
-```bash
-set -a && source .env && set +a
-```
-
-> You need to re-run this any time you open a new SSH session before running psql commands.
-
 Fill in every value:
 
 ```env
@@ -114,6 +106,14 @@ python3 -c "import secrets; print(secrets.token_hex(16))"
 ```
 
 > `POSTGRES_PASSWORD` in `.env` is read by both the bot (`DATABASE_URL`) and the postgres container. No need to edit `docker-compose.yml` separately.
+
+After saving, load the vars into your current shell session (required for the psql commands in later steps):
+
+```bash
+set -a && source .env && set +a
+```
+
+> Re-run this whenever you open a new SSH session before using psql commands.
 
 ---
 
@@ -154,34 +154,18 @@ The bot waits for postgres and redis health checks to pass before starting.
 
 ---
 
-## Step 7 — Seed the database with test users
+## Step 7 — Verify the database schema
 
-Replace the phone numbers below with real numbers you'll use for testing (in E.164 format: `+91XXXXXXXXXX`).
-
-```bash
-docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "
-INSERT INTO users (phone, name) VALUES
-  ('+917387243265', 'Ronnie H'),
-  ('+919876543210', 'Test User 2'),
-  ('+919823456789', 'Test User 3')
-ON CONFLICT (phone) DO NOTHING;
-"
-```
-
-Verify:
+Confirm the `transactions` table was created by the init migration:
 
 ```bash
 docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c \
-  "SELECT id, name, phone, balance FROM users;"
+  "\dt"
 ```
 
-Verify:
+Expected: one table — `transactions`.
 
-```bash
-docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT id, name, phone, balance FROM users;"
-```
-
-> The phone number you use in Telegram must match one of the seeded numbers. When you send `/start` and share your contact, the bot matches it against this table.
+No seeding needed — the table populates automatically as SMS payments arrive.
 
 ---
 
@@ -210,7 +194,7 @@ Verify it was parsed and inserted:
 
 ```bash
 docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c \
-  "SELECT txn_id, amount, credited FROM received_transactions;"
+  "SELECT txn_id, phone, amount, bank, confirmed FROM transactions;"
 ```
 
 ---
@@ -246,19 +230,21 @@ Heartbeat rule (keeps watchdog silent):
 docker compose exec bot uv run python scripts/smoke_test.py
 ```
 
-All 5 checks should pass.
+Checks: env vars, Telegram token, FastAPI `/health`, `transactions` table exists, Redis connection. All should pass.
 
 ---
 
 ## Step 11 — End-to-end payment test
 
-1. Open the bot in Telegram → `/start` → share your phone number (must match a seeded number)
-2. Tap **Deposit** — bot sends the QR code
+**Bot flow:**
+
+1. Open the bot in Telegram → `/start` → tap **Share my phone number** → phone stored
+2. Tap **Confirm Payment** — bot sends the QR code
 3. Pay ₹1 via any UPI app
 4. Bank SMS arrives on Android → forwarded to EC2 webhook → parsed → inserted into DB
-5. Submit the UTR in the bot → bot replies with balance confirmation
+5. Submit the UTR in the bot → bot confirms and records payment against your phone number
 
-**Or test without a real payment (inject SMS manually):**
+**Test without a real payment (inject SMS manually):**
 
 ```bash
 curl -X POST http://YOUR_EC2_PUBLIC_IP:8000/webhook/sms \
@@ -267,7 +253,7 @@ curl -X POST http://YOUR_EC2_PUBLIC_IP:8000/webhook/sms \
   -d '{"sender":"HDFCBK","body":"Rs.500.00 credited to your a/c XX1234 on 17-04-26. Info: UPI-Test. Ref No 998877665544. -HDFC Bank"}'
 ```
 
-Then submit UTR `998877665544` in the bot.
+Then in the bot: `/start` → share phone → **Confirm Payment** → submit UTR `998877665544` → confirmed.
 
 ---
 

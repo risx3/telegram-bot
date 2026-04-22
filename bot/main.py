@@ -17,8 +17,7 @@ from telegram.ext import Application, MessageHandler, filters
 
 from bot.db.connection import close_pool, create_pool
 from bot.handlers.deposit import build_deposit_handler
-from bot.handlers.profile import build_profile_handlers
-from bot.handlers.start import build_start_handler
+from bot.handlers.start import build_start_handler, cmd_exit
 from bot.services.sms_worker import run_worker
 from bot.services.watchdog import build_scheduler
 from bot.webhook.sms_receiver import app as fastapi_app, init_redis, close_redis
@@ -47,19 +46,8 @@ def _build_application() -> Application:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     app = Application.builder().token(token).build()
 
-    # Start / auth
     app.add_handler(build_start_handler())
-
-    # Deposit (ConversationHandler must come before plain message handlers
-    # so its entry_points are checked first)
     app.add_handler(build_deposit_handler())
-
-    # Profile + back-to-menu (plain message handlers)
-    for handler in build_profile_handlers():
-        app.add_handler(handler)
-
-    # Exit button (global fallback)
-    from bot.handlers.start import cmd_exit
     app.add_handler(MessageHandler(filters.Regex(r"^Exit$"), cmd_exit))
 
     return app

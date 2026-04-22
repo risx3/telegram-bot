@@ -15,7 +15,7 @@ from pathlib import Path
 
 import redis.asyncio as aioredis
 
-from bot.db.queries import insert_received_transaction
+from bot.db.queries import insert_transaction
 from bot.services import sms_parser
 
 logger = logging.getLogger(__name__)
@@ -71,11 +71,12 @@ async def run_worker(redis_url: str, stop_event: asyncio.Event) -> None:
 
             txn_id = parsed["txn_id"]
             amount = Decimal(str(parsed["amount"]))
-            inserted = await insert_received_transaction(txn_id, amount, sms_body)
+            bank = parsed.get("bank", "")
+            inserted = await insert_transaction(txn_id, amount, bank, sms_body)
             if inserted:
                 logger.info(
                     "Transaction inserted: txn_id=%s amount=%.2f bank=%s",
-                    txn_id, amount, parsed["bank"],
+                    txn_id, amount, bank,
                 )
             else:
                 logger.info("Duplicate transaction ignored: txn_id=%s", txn_id)

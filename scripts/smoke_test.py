@@ -122,10 +122,7 @@ async def check_webhook(client: httpx.AsyncClient) -> None:
 # ── 4. PostgreSQL ────────────────────────────────────────────────────────────
 
 REQUIRED_TABLES = [
-    "users",
-    "received_transactions",
-    "deposit_sessions",
-    "manual_review",
+    "transactions",
 ]
 
 async def check_postgres() -> None:
@@ -156,24 +153,22 @@ async def check_postgres() -> None:
             else:
                 record_fail(
                     f"Table '{table}' is missing — "
-                    "run: docker-compose exec postgres psql -U user -d depositbot "
+                    "run: docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB "
                     "-f /docker-entrypoint-initdb.d/001_init.sql"
                 )
 
-        # Fetch user names
-        print("\n[4b] Registered users")
-        users = await conn.fetch("SELECT name, phone FROM users ORDER BY id LIMIT 10")
-        if users:
-            ok(f"{len(users)} user(s) found:")
-            for u in users:
-                name = u["name"] or "(no name)"
-                print(f"       • {name}  {u['phone']}")
+        # Show recent transactions
+        print("\n[4b] Recent transactions")
+        rows = await conn.fetch(
+            "SELECT txn_id, phone, amount, confirmed, received_at FROM transactions ORDER BY received_at DESC LIMIT 5"
+        )
+        if rows:
+            ok(f"{len(rows)} transaction(s) found (latest 5):")
+            for r in rows:
+                confirmed = "confirmed" if r["confirmed"] else "pending"
+                print(f"       • {r['txn_id']}  ₹{r['amount']}  {r['phone'] or 'no phone'}  [{confirmed}]")
         else:
-            warn(
-                "No users registered yet — add one with:\n"
-                "       docker-compose exec postgres psql -U user -d depositbot -c \\\n"
-                "       \"INSERT INTO users (phone, name) VALUES ('+91XXXXXXXXXX', 'Your Name');\""
-            )
+            warn("No transactions yet — inject a test SMS to populate the table.")
 
     finally:
         await conn.close()
